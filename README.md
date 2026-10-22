@@ -1,5 +1,11 @@
 # ESP-SDR firmware
 
+> **Fork note:** this fork's [`displays`](https://github.com/andrewsharmon/esp-sdr-art/tree/displays)
+> branch adds stand-alone graphical displays: a live spectrum and waterfall on the
+> M5Stack Din Meter (ESP32-S3, knob-tuned colour LCD) and on an ESP32-C3 SuperMini
+> with a 0.42" OLED. See [docs/displays.md](https://github.com/andrewsharmon/esp-sdr-art/blob/displays/docs/displays.md)
+> on that branch. `main` otherwise tracks [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr).
+
 <img src="docs/espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">
 
 ### Try it yourself: [Project overview](https://espargos.net/espsdr/) · [Browser SDR viewer](https://espargos.net/espsdr/app/) · [Browser firmware installer](https://espargos.net/espsdr/app/flash.html)
