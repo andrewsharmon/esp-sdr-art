@@ -82,7 +82,7 @@ idf.py -B build-c3oled -p PORT flash
 
 Full details are in [docs/displays.md](docs/displays.md): screen layout, the
 bin-width table, board notes, menuconfig options (LCD flip, encoder direction,
-OLED offset) and the debug commands (`DM?`, `OLED?`, `OLEDDUMP`, …).
+OLED offset) and the debug commands (`DM?`, `DMWF`, `OLED?`, `OLEDDUMP`, …).
 
 ---
 
