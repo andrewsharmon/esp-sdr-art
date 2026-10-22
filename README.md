@@ -1,4 +1,96 @@
-# ESP-SDR firmware
+# ESP-SDR Displays
+
+**A pocket 2.4 GHz spectrum analyzer from an ordinary ESP32 board, with no
+SDR hardware and no computer.**
+
+This fork of [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr) adds
+stand-alone graphical front ends. The ESP32's own Wi-Fi receiver feeds a live
+spectrum and scrolling waterfall drawn on the board's built-in screen, using
+ESP-SDR's undocumented raw I/Q capture path. Plug in USB and the board is still
+a complete ESP-SDR receiver for the browser viewer and every host tool. The
+display simply pauses while a computer is talking to it.
+
+| | M5Stack Din Meter | ESP32-C3 SuperMini 0.42" OLED |
+| --- | --- | --- |
+| Chip | ESP32-S3 | ESP32-C3 |
+| Screen | 240×135 colour LCD | 72×40 monochrome OLED |
+| Capture | Continuous, both cores, gapless RF writer | 80 MS/s snapshots, burst-gated FFTs |
+| Span | 80 MHz down to 2 MHz | 67.5 MHz |
+| Finest bin | 7.8 kHz | 312.5 kHz |
+| Controls | Rotary knob + push | BOOT button |
+| Build defaults | `sdkconfig.defaults.dinmeter` | `sdkconfig.defaults.c3oled` |
+
+## M5Stack Din Meter
+
+A colour spectrum analyzer in a DIN-rail case. The header shows the centre
+frequency, the detector and the span. Below it come the band-edge frequencies
+and a readout of the strongest signal (frequency, dB above the noise floor), a
+50 dB live spectrum, and a colour waterfall with the newest line on top.
+
+**Knob:** turn to tune · **press** to switch the knob to span (bandwidth)
+adjustment, press again to return to tuning · **long press** for peak hold ↔
+average. Whatever the knob controls is highlighted in amber.
+
+- Tunes 2210–2700 MHz in 1 kHz steps. The step size follows the span, and fast
+  turning moves five steps per detent.
+- Spans of 80, 60, 40, 20, 16, 10, 5 and 2 MHz, with bins from 78 kHz down to
+  7.8 kHz and the analog filter matched to each span.
+- Built on the S3's continuous capture. Each waterfall line is a 45 ms gapless
+  run whose on-chip FFT frames are redirected to the screen instead of USB.
+  That gives about 12 lines per second.
+- The encoder is counted by the PCNT peripheral, so no clicks are lost while a
+  capture run masks interrupts.
+
+```sh
+idf.py -B build-dinmeter -D SDKCONFIG=build-dinmeter/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.dinmeter" set-target esp32s3 build
+idf.py -B build-dinmeter -p PORT flash
+```
+
+## ESP32-C3 SuperMini with 0.42" OLED
+
+A thumbnail-sized waterfall on one of the cheapest ESP32 boards there is. It
+shows a 67.5 MHz span: frequency labels, a live spectrum and a dithered
+waterfall in 72×40 pixels.
+
+- **BOOT button:** a short press steps the centre frequency (2437 → 2462 → 2480
+  → 2412 → 2400 MHz). A long press cycles the view: spectrum + waterfall, full
+  waterfall, or slow waterfall with about 16 s of history.
+- **Burst-gated FFTs:** each 202 µs snapshot is scanned for energy first, and
+  only its strongest blocks are transformed. Short Wi-Fi and Bluetooth bursts
+  therefore show up far more often than they would with plain consecutive
+  FFTs.
+
+```sh
+idf.py -B build-c3oled -D SDKCONFIG=build-c3oled/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.c3oled" set-target esp32c3 build
+idf.py -B build-c3oled -p PORT flash
+```
+
+## How the displays fit in
+
+- **Off by default.** Stock builds for every chip are unchanged. The displays
+  are enabled only through their defaults files above.
+- **Host first.** A host command pauses the display ("USB HOST"). The serial
+  protocol is unchanged, and the display resumes when the five-second lease
+  expires. On the Din Meter, the UI frees its display memory for the host
+  while it is connected.
+- **Small hooks into ESP-SDR:** `ring_capture_local_sink` (S3 spectrum frames
+  to an on-device consumer) and `burst_serial_set_idle()` (display work from
+  the shared serial loop). The board pins are removed from browser GPIO
+  control.
+
+Full details are in [docs/displays.md](docs/displays.md): screen layout, the
+bin-width table, board notes, menuconfig options (LCD flip, encoder direction,
+OLED offset) and the debug commands (`DM?`, `OLED?`, `OLEDDUMP`, …).
+
+---
+
+## About ESP-SDR (upstream)
+
+Everything below describes the upstream ESP-SDR firmware that these displays
+build on, by the [ESPARGOS](https://espargos.net/) team. `main` on this fork
+tracks [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr).
 
 <img src="docs/espargos-logo.png" width="40%" align="right" alt="ESPARGOS logo">
 
@@ -21,7 +113,7 @@ AI-generated: we understand the capture mechanism well on the ESP32-C61 used in
 our ESPARGOS One array, but porting it to the whole ESP32 family by hand would
 have been too much work.
 
-## Quick start
+### Quick start
 
 1. Flash the firmware from the [browser installer](https://espargos.net/espsdr/app/flash.html).
 2. Open the [browser viewer](https://espargos.net/espsdr/app/) and connect.
@@ -30,7 +122,7 @@ For continuous streaming into Gqrx, GNU Radio and friends, use an ESP32-S31
 with [SoapyESPSDR](https://github.com/ESPARGOS/SoapyESPSDR), or an ESP32-S3 with
 [esp-sdr-bridge](https://github.com/z2labs/esp-sdr-bridge).
 
-## Supported chips
+### Supported chips
 
 | Chip | Status | Native USB | UART0 TX / RX | Sample rates (MS/s) | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -67,7 +159,7 @@ see [rx-controls.md](docs/rx-controls.md).
 Snapshots are bursts of up to 16,380 samples (8,190 on the C2 and 12,284 on the
 S2), so there are gaps between them. Gain is not calibrated in dB.
 
-## What you can do with it
+### What you can do with it
 
 **Burst I/Q captures** (all chips): signed 8-bit or packed 10-bit I/Q at the
 rates above. This is what the browser viewer uses.
@@ -87,15 +179,9 @@ continuous 8-bit I/Q at up to 20 MS/s over high-speed USB or 40 MS/s over
 Gigabit Ethernet, for [SoapyESPSDR](https://github.com/ESPARGOS/SoapyESPSDR).
 See [s31-streaming.md](docs/s31-streaming.md).
 
-**Stand-alone displays** (optional builds): a live spectrum and waterfall on
-an M5Stack Din Meter (ESP32-S3; the knob tunes, a press switches it to span
-adjustment, 80 down to 2 MHz) or an ESP32-C3 SuperMini with a 0.42" OLED,
-with no host computer. A USB host still gets the full protocol. See
-[displays.md](docs/displays.md).
-
 ![Gqrx displaying an LTE signal at 2.63 GHz, continuously sampled at 40 MSa/s over Ethernet with an ESP32-S31 and SoapyESPSDR.](docs/gqrx-esp-sdr.png)
 
-## Talking to the firmware
+### Talking to the firmware
 
 The firmware speaks a simple line-based protocol over native USB or UART
 (2 Mbaud): `INFO`, `FREQ 2442`, `CAP16 4096 0` and so on, with binary payloads
@@ -113,7 +199,7 @@ A few practical notes:
   the board resets unexpectedly, stop ModemManager or tell it to ignore the
   device.
 
-## Build and flash
+### Build and flash
 
 [firmware-targets.json](firmware-targets.json) lists every firmware variant
 and the ESP-IDF commit it is pinned to. Check out that commit, run
@@ -134,16 +220,17 @@ builds a release image the same way CI does. Host-side tests run with
 
 Chip-specific notes: [ESP32-C2](docs/esp32c2.md), [ESP32-H2](docs/esp32h2.md).
 
-## Source layout
+### Source layout
 
 - `main/targets/<chip>/`: per-chip receiver, tuning and capture memory guard.
 - `main/families/c5_c6_c61/`: receiver shared by the C5, C6 and C61.
 - `main/targets/esp32s31/streaming/`: the S31 USB/Ethernet streaming application.
 - `main/common/`: serial transport, gain, limits, bandwidth, spectrum and ring capture.
+- `main/targets/esp32s3/dinmeter_ui.c`, `main/common/oled_waterfall.c`: the stand-alone displays.
 - `main/diagnostics/`: optional register probes, not part of release builds.
 - `platform/esp32s2/`: patched copy of the ESP-IDF USB CDC console for the S2.
 
-## Contributors
+### Contributors
 
 <table>
   <tr>
@@ -172,7 +259,7 @@ Thanks to [h0m3us3r](https://github.com/h0m3us3r) for
 [eSpDR](https://github.com/h0m3us3r/eSpDR), whose 5/6 LO investigation informed
 our lower-frequency tuning.
 
-## License
+### License
 
 ESP-SDR is licensed under the GNU General Public License, version 3 or later
 (`GPL-3.0-or-later`); see [LICENSE](LICENSE). We chose the GPL because we want
