@@ -73,6 +73,7 @@
 #define FREQ_MIN_KHZ   2210000u /* keep clear of the 1842-2210 MHz alternate LO plan */
 #define FREQ_MAX_KHZ   2700000u
 #define LCD_HZ         40000000
+#define SAVE_AFTER_US  5000000 /* store the view once adjustments settle */
 
 typedef struct {
     uint16_t span_mhz_x10;
@@ -102,6 +103,13 @@ static const char *init_failure = "init";
  * CYDCFG / CYDTEST store overrides in NVS so they survive the auto-reset
  * that opening the serial port triggers. */
 static uint8_t cfg_madctl, cfg_invert, cfg_test;
+/* The view (centre, span, detector) is stored once adjustments have settled
+ * for SAVE_AFTER_US, and only when it changed: one flash write per session. */
+static uint32_t view_center_khz; /* stored centre, 0 = none */
+static uint8_t view_span, view_average;
+static bool restore_pending;
+static int64_t view_dirty_at;
+static unsigned current_center_khz; /* as passed to the last cyd_step */
 /* Portrait waterfall rows scroll in hardware (VSCRDEF/VSCSAD): a new line is
  * one row write plus a scroll offset, instead of redrawing ~200 rows. */
 static bool scroll_on, need_full;
@@ -260,6 +268,28 @@ static void config_load(void) {
     nvs_get_u8(nvs, "madctl", &cfg_madctl);
     nvs_get_u8(nvs, "invert", &cfg_invert);
     nvs_get_u8(nvs, "test", &cfg_test);
+    if (nvs_get_u32(nvs, "center", &view_center_khz) != ESP_OK || view_center_khz < FREQ_MIN_KHZ ||
+        view_center_khz > FREQ_MAX_KHZ)
+        view_center_khz = 0;
+    if (nvs_get_u8(nvs, "span", &view_span) == ESP_OK && view_span < SPAN_COUNT) span_index = view_span;
+    if (nvs_get_u8(nvs, "avg", &view_average) == ESP_OK) average = view_average != 0;
+    restore_pending = view_center_khz != 0;
+    nvs_close(nvs);
+}
+
+static void view_save(unsigned center_khz) {
+    view_dirty_at = 0;
+    if (center_khz == view_center_khz && span_index == view_span && average == view_average) return;
+    nvs_handle_t nvs;
+    if (nvs_open("cyd", NVS_READWRITE, &nvs) != ESP_OK) return;
+    nvs_set_u32(nvs, "center", center_khz);
+    nvs_set_u8(nvs, "span", span_index);
+    nvs_set_u8(nvs, "avg", average);
+    if (nvs_commit(nvs) == ESP_OK) {
+        view_center_khz = center_khz;
+        view_span = span_index;
+        view_average = average;
+    }
     nvs_close(nvs);
 }
 
@@ -722,6 +752,7 @@ static void step(int direction, unsigned center_khz, cyd_retune_fn retune) {
         if ((unsigned)next != span_index) {
             span_index = next;
             reset_display_history();
+            view_dirty_at = esp_timer_get_time();
         }
     } else {
         int s = spans[span_index].step_khz;
@@ -729,6 +760,7 @@ static void step(int direction, unsigned center_khz, cyd_retune_fn retune) {
         if (khz < FREQ_MIN_KHZ) khz = FREQ_MIN_KHZ;
         if (khz > FREQ_MAX_KHZ) khz = FREQ_MAX_KHZ;
         retune((unsigned)khz);
+        view_dirty_at = esp_timer_get_time();
     }
 }
 
@@ -750,6 +782,7 @@ static void poll_controls(unsigned center_khz, cyd_retune_fn retune) {
             long_fired = true;
             average = !average;
             reset_display_history();
+            view_dirty_at = now;
         }
     } else if (zone < 0 && press_zone >= 0) {
         if ((press_zone == 1 || press_zone == 3) && !long_fired && now - press_start > 30000)
@@ -793,6 +826,7 @@ bool cyd_init(void) {
 void cyd_step(unsigned center_khz, bool host_active, cyd_acquire_fn acquire, cyd_retune_fn retune) {
     static bool host_shown;
     if (!present) return;
+    current_center_khz = center_khz;
     if (host_active) {
         if (!host_shown) {
             render(center_khz, true);
@@ -805,9 +839,18 @@ void cyd_step(unsigned center_khz, bool host_active, cyd_acquire_fn acquire, cyd
         host_shown = false;
         reset_display_history();
         line_start = esp_timer_get_time();
+        restore_pending = view_center_khz != 0; /* back to the stored slice after a host retuned */
+    }
+    if (restore_pending) {
+        restore_pending = false;
+        if (center_khz != view_center_khz) {
+            retune(view_center_khz);
+            return; /* the next step sees the new centre */
+        }
     }
     if (cfg_test) return; /* pattern stays on screen until CYDTEST 0 */
     poll_controls(center_khz, retune);
+    if (view_dirty_at && esp_timer_get_time() - view_dirty_at >= SAVE_AFTER_US) view_save(center_khz);
     const span_t *s = &spans[span_index];
     unsigned n = s->nfft, blocks = SNAPSHOT_WORDS / n;
     workspace(n);
@@ -832,7 +875,9 @@ bool cyd_command(const char *line) {
                            : snprintf(reply, sizeof(reply), "CYD ABSENT %s", init_failure);
         snprintf(
             reply + used, sizeof(reply) - used,
-            " madctl=%02x invert=%u test=%u scroll=%u lps=%u.%u render=%uus ffts=%u span=%u knob=%s det=%s lines=%u floor=%d peak=%d/%d heap=%u/%u\n",
+            " center=%u saved=%u/%u/%s madctl=%02x invert=%u test=%u scroll=%u lps=%u.%u render=%uus ffts=%u span=%u knob=%s det=%s lines=%u floor=%d peak=%d/%d heap=%u/%u\n",
+            current_center_khz, (unsigned)view_center_khz,
+            spans[view_span < SPAN_COUNT ? view_span : 0].span_mhz_x10 / 10, view_average ? "avg" : "pk",
             cfg_madctl, cfg_invert, cfg_test, scroll_on, (unsigned)(line_gap_us ? 1000000 / line_gap_us : 0),
             (unsigned)(line_gap_us ? 10000000 / line_gap_us % 10 : 0), (unsigned)render_us,
             (unsigned)last_line_ffts, spans[span_index].span_mhz_x10, knob_span ? "SPAN" : "TUNE",
@@ -854,6 +899,26 @@ bool cyd_command(const char *line) {
             scroll_setup();
             render(0, false);
         }
+        burst_serial_send("OK\n", 3);
+        return true;
+    }
+    unsigned center_khz, span_mhz;
+    char detector[4] = "";
+    int fields = sscanf(line, "CYDSET %u %u %3s %c", &center_khz, &span_mhz, detector, &extra);
+    if (!strncmp(line, "CYDSET ", 7)) {
+        int found = -1;
+        for (unsigned k = 0; k < SPAN_COUNT && fields >= 2; k++)
+            if (spans[k].span_mhz_x10 == span_mhz * 10) found = (int)k;
+        bool det_ok = fields == 2 || (fields == 3 && (!strcmp(detector, "pk") || !strcmp(detector, "avg")));
+        if (found < 0 || !det_ok || center_khz < FREQ_MIN_KHZ || center_khz > FREQ_MAX_KHZ) {
+            burst_serial_send("ERR cydset\n", 11);
+            return true;
+        }
+        span_index = (unsigned)found;
+        if (fields == 3) average = !strcmp(detector, "avg");
+        if (present) reset_display_history();
+        view_save(center_khz);
+        restore_pending = true; /* the display retunes on its next step */
         burst_serial_send("OK\n", 3);
         return true;
     }

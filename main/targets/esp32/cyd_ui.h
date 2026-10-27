@@ -13,7 +13,7 @@ typedef void (*cyd_retune_fn)(unsigned khz);
 
 bool cyd_init(void);
 void cyd_step(unsigned center_khz, bool host_active, cyd_acquire_fn acquire, cyd_retune_fn retune);
-/* CYD?, CYDLINE, CYDCFG, CYDTEST: ordinary commands. */
+/* CYD?, CYDLINE, CYDCFG, CYDTEST, CYDSET: ordinary commands. */
 bool cyd_command(const char *line);
 /* CYDTOUCH?: passive (no lease, display keeps running). */
 bool cyd_passive_command(const char *line);

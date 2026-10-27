@@ -136,6 +136,30 @@ idf.py -B build-cyd -D SDKCONFIG=build-cyd/sdkconfig \
 idf.py -B build-cyd -p PORT -b 460800 flash
 ```
 
+**Remembering the view.** The board stores its centre, span and detector in
+NVS once you have stopped adjusting for 5 seconds, and only if they changed.
+That's one flash write per adjustment session. It returns to that view after
+every power cycle, and after a host session that retuned it.
+
+**Several boards side by side.** To give each board an exact slice, use
+`CYDSET <centre_kHz> <span_MHz> [pk|avg]`, which stores immediately. Or use
+`tools/cyd_program.py`, which can flash a board and split a band evenly
+across boards:
+
+```bash
+# board 3 of 4 covering 2400-2480 MHz: 20 MHz span centred on 2450 MHz
+python tools/cyd_program.py --port PORT --flash --band 2400 2480 --boards 4 --index 2
+python tools/cyd_program.py --port PORT --center 2437.5 --span 16
+```
+
+To flash a stack of boards, `tools/flash_watch.py` flashes each new board as
+you plug it in, checks that the display came up, and chimes when it's ready
+to unplug:
+
+```bash
+python tools/flash_watch.py --build-dir build-cyd --chip ESP32-D0WD --check 'CYD?' --expect 'CYD PRESENT'
+```
+
 `menuconfig` has portrait/landscape, the default MADCTL byte, colour inversion
 and touch axis options.
 
@@ -150,9 +174,10 @@ and touch axis options.
 | `OLED ON` / `OLED OFF`, `OLEDMODE 0..2` | C3: blank the panel, select the view |
 | `OLEDDUMP` | C3: the frame buffer as 40 lines of `#`/`.` |
 | `OLEDLINE` | C3: noise floor and the latest 72 column levels |
-| `CYD?` | CYD status: panel setting, span, knob mode, detector, line count, floor, peak, heap |
+| `CYD?` | CYD status: centre, stored view, panel setting, scroll, lines/s, render time, FFTs per line, span, knob mode, detector, floor, peak, heap |
 | `CYDLINE` | CYD: noise floor and the latest column levels |
 | `CYDCFG <madctl> <invert>`, `CYDTEST 0\|1` | CYD: panel orientation/colour (stored), orientation test pattern |
+| `CYDSET <centre_kHz> <span_MHz> [pk\|avg]` | CYD: set and store the view; the display retunes when the host releases it |
 | `CYDTOUCH?` | CYD: current touch position and raw controller values. Passive |
 
 `CAPS` adds `DINMETER`, `CYD` or `OLED` when the feature is built in.
