@@ -9,8 +9,9 @@ one is harmless. Only boards whose chip type matches --chip are touched.
 
 Examples (activate the ESP-IDF environment first, for esptool and pyserial):
 
-  # Cheap Yellow Displays on a CH340: check the display came up
-  python tools/flash_watch.py --build-dir build-cyd --chip ESP32-D0WD --check 'CYD?' --expect 'CYD PRESENT'
+  # Cheap Yellow Displays on a CH340: check the display came up, keep a board list
+  python tools/flash_watch.py --build-dir build-cyd --chip ESP32-D0WD --check 'CYD?' --expect 'CYD PRESENT' \
+      --record flashed-boards.tsv
 
   # Any ESP32-S3 on native USB, no serial check, skip two boards already done
   python tools/flash_watch.py --build-dir build-s3 --chip ESP32-S3 \
@@ -18,6 +19,7 @@ Examples (activate the ESP-IDF environment first, for esptool and pyserial):
 """
 import argparse
 import glob
+import hashlib
 import re
 import subprocess
 import sys
@@ -36,6 +38,35 @@ def chime(name, enabled):
         subprocess.Popen(['afplay', str(sound)])
     elif enabled:
         print('\a', end='', flush=True)
+
+
+def image_fingerprint(build_dir):
+    """Short hash of every image flash_args writes: tells builds apart."""
+    h = hashlib.sha256()
+    for token in (build_dir / 'flash_args').read_text().split():
+        path = build_dir / token
+        if not token.startswith('-') and path.is_file():
+            h.update(path.read_bytes())
+    return h.hexdigest()[:12]
+
+
+def load_record(path):
+    """MACs from the first field of each line of a --record file (# comments)."""
+    if not path or not path.exists():
+        return set()
+    macs = set()
+    for line in path.read_text().splitlines():
+        if line and not line.startswith('#'):
+            macs.add(line.split()[0].lower())
+    return macs
+
+
+def append_record(path, mac, kind, build_dir, image, status):
+    new = not path.exists()
+    with path.open('a') as f:
+        if new:
+            f.write('# mac\tchip\tflashed\tbuild\timage\tstatus\n')
+        f.write(f'{mac}\t{kind}\t{time.strftime("%Y-%m-%d %H:%M:%S")}\t{build_dir}\t{image}\t{status}\n')
 
 
 def identify(port):
@@ -70,6 +101,7 @@ def main():
                    help='serial port globs to watch')
     p.add_argument('--baud', type=int, default=460800, help='flashing baud rate')
     p.add_argument('--known', nargs='*', default=[], help='MACs to skip (already programmed)')
+    p.add_argument('--record', type=Path, help='board list (TSV): its MACs are skipped, new boards are appended')
     p.add_argument('--check', help='serial command sent after flashing, e.g. "CYD?"')
     p.add_argument('--expect', help='reply prefix that means the firmware came up')
     p.add_argument('--check-baud', type=int, default=2000000)
@@ -81,10 +113,12 @@ def main():
     flash_args = a.build_dir / 'flash_args'
     if not flash_args.exists():
         p.error(f'{flash_args} not found: build the project first')
-    seen = {m.lower() for m in a.known}
+    seen = {m.lower() for m in a.known} | load_record(a.record)
+    image = image_fingerprint(a.build_dir)
     done = []
     end = time.time() + a.minutes * 60
-    log(f'watching {" ".join(a.ports)} for {a.chip} boards; flashing from {a.build_dir}')
+    log(f'watching {" ".join(a.ports)} for {a.chip} boards; flashing {a.build_dir} (image {image}); '
+        f'{len(seen)} known')
 
     while time.time() < end:
         ports = sorted({q for g in a.ports for q in glob.glob(g)})
@@ -127,6 +161,8 @@ def main():
             if ok:
                 seen.add(mac)
                 done.append(mac)
+                if a.record:
+                    append_record(a.record, mac, kind, a.build_dir, image, status)
             chime('Glass' if ok else 'Basso', not a.quiet)
         while glob.glob(port) and time.time() < end:  # wait for unplug
             time.sleep(0.5)
