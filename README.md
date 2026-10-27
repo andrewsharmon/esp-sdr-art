@@ -4,21 +4,21 @@
 SDR hardware and no computer.**
 
 This fork of [ESPARGOS/esp-sdr](https://github.com/ESPARGOS/esp-sdr) adds
-stand-alone graphical front ends. The ESP32's own Wi-Fi receiver feeds a live
+stand-alone graphical front ends for three boards. The ESP32's own Wi-Fi receiver feeds a live
 spectrum and scrolling waterfall drawn on the board's built-in screen, using
 ESP-SDR's undocumented raw I/Q capture path. Plug in USB and the board is still
 a complete ESP-SDR receiver for the browser viewer and every host tool. The
 display simply pauses while a computer is talking to it.
 
-| | M5Stack Din Meter | ESP32-C3 SuperMini 0.42" OLED |
-| --- | --- | --- |
-| Chip | ESP32-S3 | ESP32-C3 |
-| Screen | 240×135 colour LCD | 72×40 monochrome OLED |
-| Capture | Continuous, both cores, gapless RF writer | 80 MS/s snapshots, burst-gated FFTs |
-| Span | 80 MHz down to 2 MHz | 67.5 MHz |
-| Finest bin | 7.8 kHz | 312.5 kHz |
-| Controls | Rotary knob + push | BOOT button |
-| Build defaults | `sdkconfig.defaults.dinmeter` | `sdkconfig.defaults.c3oled` |
+| | M5Stack Din Meter | Cheap Yellow Display (ESP32-2432S028R) | ESP32-C3 SuperMini 0.42" OLED |
+| --- | --- | --- | --- |
+| Chip | ESP32-S3 | ESP32 | ESP32-C3 |
+| Screen | 240×135 colour LCD | 2.8" 240×320 colour LCD, touch | 72×40 monochrome OLED |
+| Capture | Continuous, both cores, gapless RF writer | Snapshots, burst-gated FFTs | 80 MS/s snapshots, burst-gated FFTs |
+| Span | 80 MHz down to 2 MHz | 80 MHz down to 2 MHz | 67.5 MHz |
+| Finest bin | 7.8 kHz | 7.8 kHz | 312.5 kHz |
+| Controls | Rotary knob + push | Touch zones + BOOT button | BOOT button |
+| Build defaults | `sdkconfig.defaults.dinmeter` | `sdkconfig.defaults.cyd` | `sdkconfig.defaults.c3oled` |
 
 ## M5Stack Din Meter
 
@@ -45,6 +45,25 @@ average. Whatever the knob controls is highlighted in amber.
 idf.py -B build-dinmeter -D SDKCONFIG=build-dinmeter/sdkconfig \
   -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.dinmeter" set-target esp32s3 build
 idf.py -B build-dinmeter -p PORT flash
+```
+
+## Cheap Yellow Display (ESP32-2432S028R)
+
+The popular 2.8" touchscreen board, run in portrait with the USB ports facing
+down. About 200 rows of waterfall history sit under the same header, peak
+readout and live spectrum as the Din Meter.
+
+- **Touch:** tap the left or right third to step down or up (hold to repeat).
+  Tap the middle to switch between tuning and span, and long-press the middle
+  for peak hold ↔ average. The BOOT button acts as the middle.
+- **Both board revisions:** only commands that the ILI9341 and ST7789 share
+  are sent. `CYDCFG` sets the orientation and colour order live and remembers
+  it, and `CYDTEST 1` shows an orientation pattern for checking.
+
+```sh
+idf.py -B build-cyd -D SDKCONFIG=build-cyd/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cyd" set-target esp32 build
+idf.py -B build-cyd -p PORT -b 460800 flash
 ```
 
 ## ESP32-C3 SuperMini with 0.42" OLED
@@ -82,7 +101,8 @@ idf.py -B build-c3oled -p PORT flash
 
 Full details are in [docs/displays.md](docs/displays.md): screen layout, the
 bin-width table, board notes, menuconfig options (LCD flip, encoder direction,
-OLED offset) and the debug commands (`DM?`, `DMWF`, `OLED?`, `OLEDDUMP`, …).
+OLED offset, CYD panel setting) and the debug commands (`DM?`, `DMWF`, `CYD?`,
+`OLED?`, `OLEDDUMP`, …).
 
 ---
 
@@ -226,7 +246,7 @@ Chip-specific notes: [ESP32-C2](docs/esp32c2.md), [ESP32-H2](docs/esp32h2.md).
 - `main/families/c5_c6_c61/`: receiver shared by the C5, C6 and C61.
 - `main/targets/esp32s31/streaming/`: the S31 USB/Ethernet streaming application.
 - `main/common/`: serial transport, gain, limits, bandwidth, spectrum and ring capture.
-- `main/targets/esp32s3/dinmeter_ui.c`, `main/common/oled_waterfall.c`: the stand-alone displays.
+- `main/targets/esp32s3/dinmeter_ui.c`, `main/targets/esp32/cyd_ui.c`, `main/common/oled_waterfall.c`: the stand-alone displays.
 - `main/diagnostics/`: optional register probes, not part of release builds.
 - `platform/esp32s2/`: patched copy of the ESP-IDF USB CDC console for the S2.
 

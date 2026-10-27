@@ -28,6 +28,9 @@
 #include "soc/dport_reg.h"
 #include "soc/dport_access.h"
 #include "heap_memory_layout.h"
+#if CONFIG_ESP_SDR_CYD
+#include "cyd_ui.h"
+#endif
 
 /* Reserve both SRAM banks, including their instruction aliases. Mode 2 only
  * exposes 32 KiB to MAC; mode 3 exposes the entire 64 KiB capture aperture. */
@@ -43,6 +46,12 @@ static uint32_t *const samples = (void *)0x3ffe8000;
 static unsigned gain_max, gain_code = 40;
 static bool hardware_agc = true;
 static unsigned frequency_mhz = 2412;
+#if CONFIG_ESP_SDR_CYD
+/* Display fine tuning in kHz above frequency_mhz; a host FREQ clears it. */
+static int ui_fofs_khz;
+/* The display captures without a host; keep its failures off the wire. */
+static bool capture_quiet;
+#endif
 /* Original ESP32 BBTOP RX filter: registers 1/2, seven-bit capacitor DAC.
  * Preserve bit 7 and restore PHY calibration before any retune or transfer. */
 static int rx_filter = -1;
@@ -95,8 +104,13 @@ static void prepare_rx(void) {
 /* Clock selectors: 0=16 MS/s, 1=80 MS/s, 2=40 MS/s. Hardware sampling,
  * not software decimation. Rates inferred from capture-duration slopes. */
 static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *capture_us) {
+#if CONFIG_ESP_SDR_CYD
+    bool quiet = capture_quiet;
+#else
+    bool quiet = false;
+#endif
     if (n < 256 || n > MAX_SAMPLES || source > 3 || clock > 2) {
-        reply("ERR args\n");
+        if (!quiet) reply("ERR args\n");
         return false;
     }
     if (rx_recalibration_stale()) prepare_rx();
@@ -122,12 +136,12 @@ static bool acquire_iq(unsigned n, unsigned source, unsigned clock, unsigned *ca
     REG_WRITE(DUMP_BYTES, byte_select);
     filter_restore();
     if (!(result & BIT(18)) || (status & 0x7fff) != n) {
-        reply("ERR capture_timeout\n");
+        if (!quiet) reply("ERR capture_timeout\n");
         return false;
     }
     for (unsigned j = 0; j < CAPACITY; j++) {
         if ((j < n && samples[j] == SENTINEL) || (j >= n && samples[j] != SENTINEL)) {
-            reply("ERR capture_memory %u\n", j);
+            if (!quiet) reply("ERR capture_memory %u\n", j);
             return false;
         }
     }
@@ -162,8 +176,13 @@ static void tune_rx(unsigned mhz) {
         calibrated_mhz = mhz;
     }
     rx_lo_plan_t plan = rx_lo_plan(mhz);
+#if CONFIG_ESP_SDR_CYD
+    int fofs = ui_fofs_khz;
+#else
+    int fofs = 0;
+#endif
     rx_lo_select(false);
-    bool channel = (mhz >= 2412 && mhz <= 2472 && (mhz - 2412) % 5 == 0) || mhz == 2484;
+    bool channel = !fofs && ((mhz >= 2412 && mhz <= 2472 && (mhz - 2412) % 5 == 0) || mhz == 2484);
     /* Calibrate on a real channel before bypassing the channel-number mapping.
      * Use the PHY entry point even for repeated requests: the Wi-Fi API can
      * skip a channel it thinks is already selected after a direct PLL retune. */
@@ -175,7 +194,7 @@ static void tune_rx(unsigned mhz) {
         unsigned cap = ram_chip_i2c_readReg(0x62, 1, 0);
         ram_chip_i2c_writeReg(0x62, 1, 0, cap & ~0x80u);
         /* This ROM uses 1/1024 MHz offsets, unlike the newer kHz API. */
-        int offset = (plan.offset_khz * 1024 + 500) / 1000;
+        int offset = ((plan.offset_khz + fofs) * 1024 + 500) / 1000;
         rom_set_rf_freq_offset(xtal == 26 ? 1 : xtal == 24 ? 2 : 0, plan.mhz, offset);
     }
 }
@@ -196,6 +215,33 @@ static bool capture(unsigned n, unsigned rate, unsigned format) {
     return burst_send_capture(n, format, elapsed);
 }
 
+#if CONFIG_ESP_SDR_CYD
+/* One display snapshot with the display's analog bandwidth; the host's
+ * LPF/BANDWIDTH choice is kept. */
+static bool cyd_acquire(unsigned n, unsigned rate, unsigned bandwidth_mhz, const uint32_t **data,
+                        unsigned *elapsed) {
+    int saved = rx_filter;
+    rx_filter = rx_bandwidth_dcap(bandwidth_mhz);
+    capture_quiet = true;
+    bool ok = spectrum_acquire(n, rate, data, elapsed);
+    capture_quiet = false;
+    rx_filter = saved;
+    return ok;
+}
+static void cyd_retune(unsigned khz) {
+    unsigned mhz = khz / 1000;
+    int off = (int)(khz % 1000);
+    if (mhz == frequency_mhz && off == ui_fofs_khz) return;
+    frequency_mhz = mhz;
+    ui_fofs_khz = off;
+    rx_ready = false;
+    prepare_rx(); /* captures retune only when calibration goes stale; apply it now, as FREQ does */
+}
+static void cyd_idle(bool host_active) {
+    cyd_step(frequency_mhz * 1000u + (unsigned)ui_fofs_khz, host_active, cyd_acquire, cyd_retune);
+}
+#endif
+
 #define frequency_valid rx_frequency_valid
 #define BURST_ID        "ESP32SDR"
 #define BURST_MAX_RATE  6
@@ -207,13 +253,21 @@ static void command(char *line) {
 #ifdef RING_PROBE
     if (ring_probe_command(line)) return;
 #endif
+#if CONFIG_ESP_SDR_CYD
+    if (cyd_command(line)) return;
+    if (ui_fofs_khz && !strncmp(line, "FREQ ", 5)) ui_fofs_khz = 0;
+#endif
     if (spectrum_command(line, frequency_mhz, spectrum_acquire)) return;
     if (burst_common_command(line)) return;
     unsigned n;
     char extra;
     if (!strcmp(line, "CAPS"))
         reply(
-            "CAPS VERSION GPIO SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS SERIALLEASE TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8\n");
+            "CAPS VERSION GPIO SPEC SPECN SPECCAPS SPECSTAT DCT UARTBAUD RXLIMITS SERIALLEASE TUNEEXT RX40 RX16 LPFANA GAIN HWAGC IQ8"
+#if CONFIG_ESP_SDR_CYD
+            " CYD"
+#endif
+            "\n");
     else if (sscanf(line, "BANDWIDTH %u %c", &n, &extra) == 1 &&
              (!n || (n >= RX_BANDWIDTH_MIN && n <= RX_BANDWIDTH_MAX))) {
         rx_filter = rx_bandwidth_dcap(n);
@@ -269,5 +323,13 @@ void app_main(void) {
     REG_CLR_BIT(RX_GAIN, BIT(23)); /* Hardware AGC is the default. */
     fflush(stdout);
     burst_serial_init();
+#if CONFIG_ESP_SDR_CYD
+    frequency_mhz = 2437;
+    rx_ready = false;
+    if (cyd_init()) {
+        burst_serial_set_idle(cyd_idle);
+        burst_serial_set_passive(cyd_passive_command);
+    }
+#endif
     burst_serial_serve(command);
 }

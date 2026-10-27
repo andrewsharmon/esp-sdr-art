@@ -118,4 +118,49 @@ menu "ESP-SDR transport"
         range 1 8
         default 4
 
+    config ESP_SDR_CYD
+        bool "ESP32-2432S028R (Cheap Yellow Display) stand-alone spectrum/waterfall"
+        depends on IDF_TARGET_ESP32
+        default n
+        help
+            320x240 ILI9341 LCD and XPT2046 resistive touch. While no serial
+            host holds the lease the receiver draws a live spectrum and
+            waterfall. Touch the left/right third to step, the middle to
+            switch between tuning and span. See docs/displays.md
+            (sdkconfig.defaults.cyd).
+
+    config ESP_SDR_CYD_PORTRAIT
+        bool "Portrait layout, 240x320 (USB ports facing down)"
+        depends on ESP_SDR_CYD
+        default y
+        help
+            Off: landscape, 320x240.
+
+    config ESP_SDR_CYD_MADCTL
+        hex "LCD memory access control (MADCTL) byte"
+        depends on ESP_SDR_CYD
+        range 0x00 0xff
+        default 0x00 if ESP_SDR_CYD_PORTRAIT
+        default 0x28
+        help
+            Orientation and colour order: MY 0x80, MX 0x40, MV 0x20 (swap
+            axes), BGR 0x08. 0x00 suits the two-USB ST7789 board in portrait;
+            0x28 the micro-USB ILI9341 board in landscape. The CYDCFG serial
+            command changes it at run time and stores it in NVS.
+
+    config ESP_SDR_CYD_INVERT
+        bool "Invert LCD colours"
+        depends on ESP_SDR_CYD
+        default n
+
+    config ESP_SDR_CYD_TOUCH_SWAP_XY
+        bool "Touch controller axes are swapped"
+        depends on ESP_SDR_CYD
+        default n
+
+    config ESP_SDR_CYD_TOUCH_INVERT_X
+        bool "Touch X axis is reversed"
+        depends on ESP_SDR_CYD
+        default n
+
 endmenu

@@ -1,0 +1,5 @@
+# ESP32-2432S028R "Cheap Yellow Display" (ESP32, 4 MB flash): stand-alone
+# spectrum/waterfall. Build with
+# SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cyd" (see docs/displays.md).
+CONFIG_ESP_SDR_CYD=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y

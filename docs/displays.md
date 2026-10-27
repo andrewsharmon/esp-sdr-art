@@ -92,6 +92,51 @@ idf.py -B build-c3oled -p PORT flash
 `menuconfig` has the I2C pins, button pin, first visible column (default 28) and
 a 180° flip. If no panel answers on I2C, the feature stays idle.
 
+## ESP32-2432S028R "Cheap Yellow Display" (ESP32)
+
+2.8" 240×320 LCD with XPT2046 resistive touch. It runs in portrait by default,
+with the USB ports facing down, giving about 200 rows of waterfall history. The
+layout matches the Din Meter: header, edge frequencies with a peak readout, a
+50 dB live spectrum, then the waterfall.
+
+The original ESP32 has only snapshot capture. In peak hold, each 16,380-sample
+snapshot is ranked by block energy and only its three strongest blocks (plus a
+rotating one) are transformed. Average transforms every block. The display
+draws about ten lines a second. Spans and bin widths are the same as on the
+Din Meter, with analog filters clamped to the ESP32's 12–67 MHz range.
+
+| Touch | Action |
+| --- | --- |
+| Left / right third | Step down / up: frequency (TUNE) or span (SPAN, right zooms in); hold to repeat |
+| Middle | Switch between TUNE and SPAN |
+| Long press in the middle (0.7 s) | Peak hold ↔ average detector |
+| BOOT button | Same as the middle |
+
+Board notes:
+
+- Two revisions exist: micro-USB with an ILI9341, and two-USB (USB-C plus
+  micro-USB) with an ST7789. Only commands both controllers share are sent.
+  Orientation and colour order are the MADCTL byte: `0x00` (portrait, RGB) is
+  tested on the two-USB board. For the ILI9341 board, landscape is expected to
+  be `0x28`, but that is untested.
+- `CYDCFG <madctl hex> <invert 0|1>` changes the panel setting live and stores
+  it in NVS. `CYDTEST 1` shows an orientation pattern (labelled corners, colour
+  bars) until `CYDTEST 0`. Both survive the reset that opening the serial port
+  triggers on this board.
+- The host link is UART0 at 2 Mbaud through the CH340, as in the standard ESP32
+  firmware. The CH340 occasionally drops a byte at that rate. If a host tool
+  reports CRC errors, use the viewer's *Switch to 1 Mbaud* (`BAUD 1000000`).
+  Flashing was reliable at 460800 baud; reading flash needed 230400.
+
+```bash
+idf.py -B build-cyd -D SDKCONFIG=build-cyd/sdkconfig \
+  -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.defaults.cyd" set-target esp32 build
+idf.py -B build-cyd -p PORT -b 460800 flash
+```
+
+`menuconfig` has portrait/landscape, the default MADCTL byte, colour inversion
+and touch axis options.
+
 ## Serial commands
 
 | Command | Reply |
@@ -103,5 +148,9 @@ a 180° flip. If no panel answers on I2C, the feature stays idle.
 | `OLED ON` / `OLED OFF`, `OLEDMODE 0..2` | C3: blank the panel, select the view |
 | `OLEDDUMP` | C3: the frame buffer as 40 lines of `#`/`.` |
 | `OLEDLINE` | C3: noise floor and the latest 72 column levels |
+| `CYD?` | CYD status: panel setting, span, knob mode, detector, line count, floor, peak, heap |
+| `CYDLINE` | CYD: noise floor and the latest column levels |
+| `CYDCFG <madctl> <invert>`, `CYDTEST 0\|1` | CYD: panel orientation/colour (stored), orientation test pattern |
+| `CYDTOUCH?` | CYD: current touch position and raw controller values. Passive |
 
-`CAPS` adds `DINMETER` or `OLED` when the feature is built in.
+`CAPS` adds `DINMETER`, `CYD` or `OLED` when the feature is built in.

@@ -54,6 +54,11 @@ static uint64_t excluded_pins(void) {
     /* LCD 4-9, buzzer 3, RTC I2C 11/12, encoder 40-42, power hold 46. */
     mask |= PINS(3, 9) | PINS(11, 12) | PINS(40, 42) | PIN(46);
 #endif
+#if CONFIG_ESP_SDR_CYD
+    /* BOOT 0, LCD 2/12-15/21, RGB LED 4/16/17, touch 25/32/33/36/39, speaker 26. */
+    mask |= PIN(0) | PIN(2) | PINS(12, 15) | PIN(21) | PIN(4) | PINS(16, 17) | PINS(25, 26) | PINS(32, 33) |
+            PIN(36) | PIN(39);
+#endif
 #if CONFIG_ESP_SDR_OLED_ENABLED
     mask |= PIN(CONFIG_ESP_SDR_OLED_SDA) | PIN(CONFIG_ESP_SDR_OLED_SCL) | PIN(CONFIG_ESP_SDR_OLED_BUTTON);
 #endif
