@@ -66,13 +66,13 @@
 #define MAX_NFFT       2048u
 #define SNAPSHOT_WORDS 16380u
 #define STRONGEST      3u
-#define LINE_US        100000
+#define LINE_US        40000 /* ~25 lines/s when capture and FFTs keep up */
 #define LONG_PRESS_US  700000
 #define REPEAT_US      400000
 #define REPEAT_EVERY   120000
 #define FREQ_MIN_KHZ   2210000u /* keep clear of the 1842-2210 MHz alternate LO plan */
 #define FREQ_MAX_KHZ   2700000u
-#define LCD_HZ         20000000
+#define LCD_HZ         40000000
 
 typedef struct {
     uint16_t span_mhz_x10;
@@ -102,6 +102,12 @@ static const char *init_failure = "init";
  * CYDCFG / CYDTEST store overrides in NVS so they survive the auto-reset
  * that opening the serial port triggers. */
 static uint8_t cfg_madctl, cfg_invert, cfg_test;
+/* Portrait waterfall rows scroll in hardware (VSCRDEF/VSCSAD): a new line is
+ * one row write plus a scroll offset, instead of redrawing ~200 rows. */
+static bool scroll_on, need_full;
+static unsigned scroll_top; /* memory row of the newest line, within the scroll area */
+static uint32_t render_us, line_gap_us, last_line_ffts;
+static int64_t last_line_at;
 
 static unsigned span_index;
 static bool knob_span; /* false: TUNE, true: SPAN */
@@ -289,6 +295,27 @@ static void panel_setup(void) {
     vTaskDelay(pdMS_TO_TICKS(20));
 }
 
+static void scroll_apply(void) {
+    unsigned row = SPEC_END + scroll_top;
+    uint8_t start[2] = {row >> 8, row & 255};
+    cmd(0x37, start, 2);
+}
+
+/* Only where the waterfall's axis is the panel's row axis, unmirrored. */
+static void scroll_setup(void) {
+#if CONFIG_ESP_SDR_CYD_PORTRAIT
+    scroll_on = !(cfg_madctl & 0xa0); /* no MV (axis swap), no MY (row mirror) */
+#else
+    scroll_on = false;
+#endif
+    if (!scroll_on) return;
+    uint8_t areas[6] = {
+        SPEC_END >> 8, SPEC_END & 255, WF_ROWS >> 8, WF_ROWS & 255, 0, 0}; /* top fixed, scroll, bottom */
+    cmd(0x33, areas, 6);
+    scroll_top = 0;
+    scroll_apply();
+}
+
 static bool lcd_init(void) {
     gpio_set_direction(PIN_LCD_BL, GPIO_MODE_OUTPUT);
     gpio_set_level(PIN_LCD_BL, 0);
@@ -306,6 +333,7 @@ static bool lcd_init(void) {
     init_failure = "lcd_io";
     if (io_open(LCD_HZ) != ESP_OK) return false;
     panel_setup();
+    scroll_setup();
     init_failure = "memory";
     for (int k = 0; k < 2; k++)
         if (!(strip[k] = heap_caps_malloc(W * STRIP * 2, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL))) return false;
@@ -487,20 +515,56 @@ static void render_test_strip(uint16_t *buf, int y0) {
     text(buf, y0, (W - text_width("CYD TEST", 2)) / 2, 180, 2, rgb(255, 255, 255), "CYD TEST");
 }
 
-static void render(unsigned center_khz, bool host_active) {
-    set_window(0, 0, W - 1, H - 1);
-    for (int y0 = 0, k = 0; y0 < H; y0 += STRIP, k ^= 1) {
+static void wait_idle(void) {
+    xSemaphoreTake(strip_done, portMAX_DELAY);
+    xSemaphoreTake(strip_done, portMAX_DELAY);
+    xSemaphoreGive(strip_done);
+    xSemaphoreGive(strip_done);
+}
+
+/* Rows [y_begin, y_end) in STRIP-row DMA strips, double-buffered. */
+static void render_rows(int y_begin, int y_end, unsigned center_khz, bool host_active) {
+    set_window(0, y_begin, W - 1, y_end - 1);
+    for (int y0 = y_begin, k = 0; y0 < y_end; y0 += STRIP, k ^= 1) {
+        int rows = y_end - y0 < STRIP ? y_end - y0 : STRIP;
         xSemaphoreTake(strip_done, portMAX_DELAY);
         if (cfg_test)
             render_test_strip(strip[k], y0);
         else
             render_strip(strip[k], y0, center_khz, host_active);
-        esp_lcd_panel_io_tx_color(io, y0 ? 0x3c : 0x2c, strip[k], W * STRIP * 2);
+        esp_lcd_panel_io_tx_color(io, y0 == y_begin ? 0x2c : 0x3c, strip[k], W * rows * 2);
     }
-    xSemaphoreTake(strip_done, portMAX_DELAY);
-    xSemaphoreTake(strip_done, portMAX_DELAY);
-    xSemaphoreGive(strip_done);
-    xSemaphoreGive(strip_done);
+    wait_idle(); /* no LCD DMA in flight during the next capture */
+}
+
+static void render(unsigned center_khz, bool host_active) {
+    if (scroll_on) {
+        scroll_top = 0; /* display row = memory row: newest line at the top */
+        scroll_apply();
+    }
+    render_rows(0, H, center_khz, host_active);
+    need_full = false;
+}
+
+/* After finish_line(): scroll the waterfall down one row in hardware, write
+ * only the new row, and redraw the header and spectrum above it. */
+static void render_line(unsigned center_khz) {
+    int64_t start = esp_timer_get_time();
+    if (!scroll_on || need_full) {
+        render(center_khz, false);
+    } else {
+        scroll_top = (scroll_top + WF_ROWS - 1) % WF_ROWS;
+        const uint8_t *src = waterfall + wf_head * W;
+        xSemaphoreTake(strip_done, portMAX_DELAY);
+        for (int x = 0; x < W; x++) strip[0][x] = palette[src[x]];
+        int row = SPEC_END + scroll_top;
+        set_window(0, row, W - 1, row);
+        esp_lcd_panel_io_tx_color(io, 0x2c, strip[0], W * 2);
+        wait_idle();
+        scroll_apply();
+        render_rows(0, SPEC_END, center_khz, false);
+    }
+    render_us = (uint32_t)(esp_timer_get_time() - start);
 }
 
 /* ---- Signal processing ---------------------------------------------------- */
@@ -617,6 +681,7 @@ static void finish_line(void) {
         histogram[value]++;
     }
     memset(peak, 0, n * sizeof(uint32_t));
+    last_line_ffts = line_ffts;
     line_ffts = 0;
 
     unsigned count = 0, percentile = 0;
@@ -642,6 +707,7 @@ static void finish_line(void) {
 /* ---- Controls --------------------------------------------------------------- */
 
 static void reset_display_history(void) {
+    need_full = true; /* the panel still holds the old waterfall rows */
     memset(waterfall, 0, WF_ROWS * W);
     memset(column, 0, sizeof(column));
     floor_q4 = -1;
@@ -752,19 +818,24 @@ void cyd_step(unsigned center_khz, bool host_active, cyd_acquire_fn acquire, cyd
     if (now - line_start >= LINE_US && line_ffts) {
         line_start = now;
         finish_line();
-        render(center_khz, false);
+        render_line(center_khz);
+        uint32_t gap = (uint32_t)(now - last_line_at);
+        if (last_line_at) line_gap_us = line_gap_us ? (line_gap_us * 7 + gap) / 8 : gap;
+        last_line_at = now;
     }
 }
 
 bool cyd_command(const char *line) {
-    char reply[256];
+    char reply[320];
     if (!strcmp(line, "CYD?")) {
         int used = present ? snprintf(reply, sizeof(reply), "CYD PRESENT")
                            : snprintf(reply, sizeof(reply), "CYD ABSENT %s", init_failure);
         snprintf(
             reply + used, sizeof(reply) - used,
-            " madctl=%02x invert=%u test=%u span=%u knob=%s det=%s lines=%u floor=%d peak=%d/%d heap=%u/%u\n",
-            cfg_madctl, cfg_invert, cfg_test, spans[span_index].span_mhz_x10, knob_span ? "SPAN" : "TUNE",
+            " madctl=%02x invert=%u test=%u scroll=%u lps=%u.%u render=%uus ffts=%u span=%u knob=%s det=%s lines=%u floor=%d peak=%d/%d heap=%u/%u\n",
+            cfg_madctl, cfg_invert, cfg_test, scroll_on, (unsigned)(line_gap_us ? 1000000 / line_gap_us : 0),
+            (unsigned)(line_gap_us ? 10000000 / line_gap_us % 10 : 0), (unsigned)render_us,
+            (unsigned)last_line_ffts, spans[span_index].span_mhz_x10, knob_span ? "SPAN" : "TUNE",
             average ? "AVG" : "PK", lines, floor_q4 >> 4, peak_offset_hz, peak_db,
             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
@@ -780,6 +851,7 @@ bool cyd_command(const char *line) {
         config_save();
         if (present) {
             panel_setup();
+            scroll_setup();
             render(0, false);
         }
         burst_serial_send("OK\n", 3);

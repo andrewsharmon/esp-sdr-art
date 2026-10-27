@@ -102,7 +102,9 @@ layout matches the Din Meter: header, edge frequencies with a peak readout, a
 The original ESP32 has only snapshot capture. In peak hold, each 16,380-sample
 snapshot is ranked by block energy and only its three strongest blocks (plus a
 rotating one) are transformed. Average transforms every block. The display
-draws about ten lines a second. Spans and bin widths are the same as on the
+draws about 23 lines a second. In portrait the waterfall uses the panel's
+hardware vertical scroll, so each new line is one row write plus a scroll
+offset, and only the header and spectrum are redrawn. Spans and bin widths are the same as on the
 Din Meter, with analog filters clamped to the ESP32's 12–67 MHz range.
 
 | Touch | Action |
